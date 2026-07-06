@@ -1,42 +1,45 @@
 package modelo;
 
-import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Clase base de los personajes del juego.
+ *
+ * Aplicacion del SRP (Principio de Responsabilidad Unica): esta clase se
+ * concentra en las estadisticas y acciones de combate del personaje, y delega
+ * las demas responsabilidades en clases colaboradoras:
+ * - {@link Inventario}: objetos y equipamiento.
+ * - {@link GestorEstados}: estados alterados y su duracion.
+ * - {@link GestorEnergia}: energia y recarga de la habilidad especial.
+ * - {@link Progresion}: experiencia y nivel.
+ */
 public abstract class Personaje implements Atacable {
     protected String nombre;
-    protected int nivel;
     protected int puntosVida;
     protected int puntosVidaMaximos;
     protected int fuerza;
     protected int defensa;
-    protected int experiencia;
-    protected List<Objeto> inventario;
-    protected Objeto objetoEquipado;
 
-    protected int energia;
-    protected int energiaMaxima;
-    protected int cooldownActual;
+    private Inventario inventario;
+    private GestorEstados gestorEstados;
+    private GestorEnergia gestorEnergia;
+    private Progresion progresion;
 
-    protected List<Estado> listaEstados;
-
-    protected static final int REGENERACION_ENERGIA = 15;
-    protected static final int EXP_PARA_SUBIR_NIVEL = 100;
+    private static final int ENERGIA_MAXIMA_INICIAL = 100;
+    private static final int VIDA_POR_NIVEL = 20;
+    private static final int FUERZA_POR_NIVEL = 5;
+    private static final int DEFENSA_POR_NIVEL = 3;
 
     public Personaje(String nombre, int puntosVidaMaximos, int fuerza, int defensa) {
         this.nombre = nombre;
-        this.nivel = 1;
         this.puntosVidaMaximos = puntosVidaMaximos;
         this.puntosVida = puntosVidaMaximos;
         this.fuerza = fuerza;
         this.defensa = defensa;
-        this.experiencia = 0;
-        this.inventario = new ArrayList<Objeto>();
-        this.objetoEquipado = null;
-        this.energiaMaxima = 100;
-        this.energia = this.energiaMaxima;
-        this.cooldownActual = 0;
-        this.listaEstados = new ArrayList<Estado>();
+        this.inventario = new Inventario();
+        this.gestorEstados = new GestorEstados();
+        this.gestorEnergia = new GestorEnergia(ENERGIA_MAXIMA_INICIAL);
+        this.progresion = new Progresion();
     }
 
     public abstract int obtenerDanoBase();
@@ -53,41 +56,32 @@ public abstract class Personaje implements Atacable {
 
     public abstract String getTipoPersonaje();
 
+    // ------------------- Inventario (delegacion) -------------------
+
     public void agregarObjeto(Objeto objeto) {
-        this.inventario.add(objeto);
+        this.inventario.agregar(objeto);
     }
 
     public void equipar(Objeto objeto) {
-        if (this.inventario.contains(objeto)) {
-            this.objetoEquipado = objeto;
-        }
+        this.inventario.equipar(objeto);
     }
 
     protected int getBonusAtaque() {
-        if (objetoEquipado != null) {
-            return objetoEquipado.getModificadorAtaque();
-        }
-        return 0;
+        return this.inventario.getBonusAtaque();
     }
 
     protected int getBonusDefensa() {
-        if (objetoEquipado != null) {
-            return objetoEquipado.getModificadorDefensa();
-        }
-        return 0;
+        return this.inventario.getBonusDefensa();
     }
 
+    // ------------------- Estados (delegacion) -------------------
+
     public void aplicarEstado(Estado nuevoEstado) {
-        this.listaEstados.add(nuevoEstado);
+        this.gestorEstados.agregar(nuevoEstado);
     }
 
     public boolean tieneEstadoActivo(String tipo) {
-        for (Estado estado : listaEstados) {
-            if (estado.getTipo().equals(tipo) && estado.estaActivo()) {
-                return true;
-            }
-        }
-        return false;
+        return this.gestorEstados.tieneEstadoActivo(tipo);
     }
 
     public boolean estaIncapacitado() {
@@ -99,12 +93,7 @@ public abstract class Personaje implements Atacable {
     }
 
     public int aplicarDanoPorEstados() {
-        int total = 0;
-        for (Estado estado : listaEstados) {
-            if (estado.getTipo().equals("DAN_TURNO") && estado.estaActivo()) {
-                total += estado.getEfecto();
-            }
-        }
+        int total = this.gestorEstados.calcularDanoPorTurno();
         this.puntosVida -= total;
         if (this.puntosVida < 0) {
             this.puntosVida = 0;
@@ -113,19 +102,10 @@ public abstract class Personaje implements Atacable {
     }
 
     public List<String> reducirEstados() {
-        List<String> expirados = new ArrayList<String>();
-        List<Estado> activos = new ArrayList<Estado>();
-        for (Estado estado : listaEstados) {
-            estado.reducirDuracion();
-            if (estado.estaActivo()) {
-                activos.add(estado);
-            } else {
-                expirados.add(estado.getNombre());
-            }
-        }
-        this.listaEstados = activos;
-        return expirados;
+        return this.gestorEstados.reducirDuraciones();
     }
+
+    // ------------------- Combate -------------------
 
     public int calcularAtaque() {
         int danoFinal = obtenerDanoBase() + getBonusAtaque();
@@ -138,10 +118,10 @@ public abstract class Personaje implements Atacable {
     public int usarHabilidadEspecial(Personaje objetivo) throws EnergiaInsuficienteException {
         if (!tieneEnergiaSuficiente()) {
             throw new EnergiaInsuficienteException(this.nombre, obtenerHabilidadEspecial(),
-                    getCostoEnergiaHabilidad(), this.energia);
+                    getCostoEnergiaHabilidad(), getEnergia());
         }
-        this.energia -= getCostoEnergiaHabilidad();
-        this.cooldownActual = getCooldownHabilidad();
+        this.gestorEnergia.consumir(getCostoEnergiaHabilidad());
+        this.gestorEnergia.iniciarCooldown(getCooldownHabilidad());
         int danoEspecial = (int) (calcularAtaque() * 1.5);
         int vidaAntes = objetivo.getPuntosVida();
         objetivo.recibirDano(danoEspecial);
@@ -165,37 +145,37 @@ public abstract class Personaje implements Atacable {
         return this.puntosVida > 0;
     }
 
+    // ------------------- Energia (delegacion) -------------------
+
     public void regenerarRecursos() {
-        if (this.energia < this.energiaMaxima) {
-            this.energia += REGENERACION_ENERGIA;
-            if (this.energia > this.energiaMaxima) {
-                this.energia = this.energiaMaxima;
-            }
-        }
-        if (this.cooldownActual > 0) {
-            this.cooldownActual--;
-        }
+        this.gestorEnergia.regenerar();
     }
 
     public boolean habilidadDisponible() {
-        return this.cooldownActual == 0;
+        return this.gestorEnergia.habilidadDisponible();
     }
 
     public boolean tieneEnergiaSuficiente() {
-        return this.energia >= getCostoEnergiaHabilidad();
+        return this.gestorEnergia.tieneEnergia(getCostoEnergiaHabilidad());
     }
 
+    // ------------------- Progresion (delegacion) -------------------
+
     public void ganarExperiencia(int exp) {
-        this.experiencia += exp;
-        if (this.experiencia >= EXP_PARA_SUBIR_NIVEL) {
-            this.nivel++;
-            this.experiencia -= EXP_PARA_SUBIR_NIVEL;
-            this.puntosVidaMaximos += 20;
-            this.fuerza += 5;
-            this.defensa += 3;
-            this.puntosVida = this.puntosVidaMaximos;
+        boolean subioNivel = this.progresion.ganarExperiencia(exp);
+        if (subioNivel) {
+            mejorarEstadisticasPorNivel();
         }
     }
+
+    private void mejorarEstadisticasPorNivel() {
+        this.puntosVidaMaximos += VIDA_POR_NIVEL;
+        this.fuerza += FUERZA_POR_NIVEL;
+        this.defensa += DEFENSA_POR_NIVEL;
+        this.puntosVida = this.puntosVidaMaximos;
+    }
+
+    // ------------------- Getters -------------------
 
     @Override
     public int getPuntosVida() {
@@ -207,7 +187,7 @@ public abstract class Personaje implements Atacable {
     }
 
     public int getNivel() {
-        return nivel;
+        return progresion.getNivel();
     }
 
     public int getPuntosVidaMaximos() {
@@ -219,26 +199,26 @@ public abstract class Personaje implements Atacable {
     }
 
     public int getExperiencia() {
-        return experiencia;
+        return progresion.getExperiencia();
     }
 
     public int getEnergia() {
-        return energia;
+        return gestorEnergia.getEnergia();
     }
 
     public int getEnergiaMaxima() {
-        return energiaMaxima;
+        return gestorEnergia.getEnergiaMaxima();
     }
 
     public int getCooldownActual() {
-        return cooldownActual;
+        return gestorEnergia.getCooldownActual();
     }
 
     public Objeto getObjetoEquipado() {
-        return objetoEquipado;
+        return inventario.getObjetoEquipado();
     }
 
     public List<Objeto> getInventario() {
-        return inventario;
+        return inventario.getObjetos();
     }
 }
